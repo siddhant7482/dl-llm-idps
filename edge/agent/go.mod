@@ -5,6 +5,9 @@ go 1.21
 require (
 	github.com/cilium/ebpf v0.12.3
 	github.com/google/gopacket v1.1.19
+	github.com/asavie/xdp v0.0.0-20220212160506-52b857d0d9eb
+	github.com/vishvananda/netlink v1.2.1
+	github.com/yalue/onnxruntime_go v1.24.1
 )
 
 require (

@@ -95,9 +95,9 @@ func BuildFeatures(key FlowKey, s FlowState) []float32 {
 	out[39] = float32(s.TotalBwdPkts)
 	out[40] = float32(s.BwdLenSum)
 	// Init windows and active data packets are not tracked yet
-	out[41] = 0
-	out[42] = 0
-	out[43] = 0
+	out[41] = float32(s.InitFwdWinBytes)
+	out[42] = float32(s.InitBwdWinBytes)
+	out[43] = float32(s.FwdActDataPkts)
 	// Active/Idle stats
 	if s.ActiveCount > 0 {
 		out[44] = float32(s.ActiveSum / float64(s.ActiveCount))

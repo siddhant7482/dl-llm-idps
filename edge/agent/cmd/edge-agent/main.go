@@ -4,6 +4,7 @@ import (
 	"edge-agent/core"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,8 @@ type Agent struct {
 	Loader *core.XdpLoader
 	Policy core.Policy
 	Model  *core.DlIdsModel
+	Evidence map[string]int
+	Token string
 }
 
 func ipToU32(ip string) (uint32, bool) {
@@ -29,6 +32,12 @@ func ipToU32(ip string) (uint32, bool) {
 }
 
 func (a *Agent) handleBlock(w http.ResponseWriter, r *http.Request) {
+	if a.Token != "" {
+		if r.Header.Get("Authorization") != "Bearer "+a.Token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
 	ip := r.URL.Query().Get("ip")
 	ttlStr := r.URL.Query().Get("ttl")
 	if ip == "" {
@@ -45,10 +54,17 @@ func (a *Agent) handleBlock(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	a.Loader.SaveSnapshot()
 	w.WriteHeader(http.StatusOK)
 }
 
 func (a *Agent) handleUnblock(w http.ResponseWriter, r *http.Request) {
+	if a.Token != "" {
+		if r.Header.Get("Authorization") != "Bearer "+a.Token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
 	ip := r.URL.Query().Get("ip")
 	if ip == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -58,13 +74,37 @@ func (a *Agent) handleUnblock(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	a.Loader.SaveSnapshot()
 	w.WriteHeader(http.StatusOK)
 }
 
 func (a *Agent) handleStats(w http.ResponseWriter, r *http.Request) {
+	if a.Token != "" {
+		if r.Header.Get("Authorization") != "Bearer "+a.Token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
 	stats := a.Loader.Stats()
 	enc := json.NewEncoder(w)
 	enc.Encode(stats)
+}
+
+func (a *Agent) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if a.Token != "" {
+		if r.Header.Get("Authorization") != "Bearer "+a.Token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	}
+	stats := a.Loader.Stats()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.Write([]byte("drops "))
+	w.Write([]byte(fmt.Sprintf("%d\n", stats.Drops)))
+	w.Write([]byte("passes "))
+	w.Write([]byte(fmt.Sprintf("%d\n", stats.Passes)))
+	w.Write([]byte("map_size "))
+	w.Write([]byte(fmt.Sprintf("%d\n", stats.MapSize)))
 }
 
 func main() {
@@ -84,11 +124,16 @@ func main() {
 	if err != nil {
 		loader = &core.XdpLoader{}
 	}
+	if snap := os.Getenv("BLOCKLIST_SNAPSHOT"); snap != "" {
+		loader.SetSnapshot(snap)
+		loader.LoadSnapshot(snap)
+	}
 	model, _ := core.NewDlIdsModel(os.Getenv("MODEL_PATH"))
-	a := &Agent{Loader: loader, Policy: core.DefaultPolicy(), Model: model}
+	a := &Agent{Loader: loader, Policy: core.DefaultPolicy(), Model: model, Evidence: make(map[string]int), Token: os.Getenv("TOKEN")}
 	http.HandleFunc("/block", a.handleBlock)
 	http.HandleFunc("/unblock", a.handleUnblock)
 	http.HandleFunc("/stats", a.handleStats)
+	http.HandleFunc("/metrics", a.handleMetrics)
 	if cap := os.Getenv("PCAP"); cap != "" {
 		go func() {
 			tap := core.NewPacketTap()
@@ -111,13 +156,21 @@ func main() {
 					features := core.BuildFeatures(sample.Key, fs)
 					pred, _ := a.Model.Predict(features)
 					if ok, ttl := a.Policy.ShouldBlock(pred); ok {
-						a.Loader.AddIP(sample.Key.SrcIP, ttl)
+						a.Evidence[sample.Key.SrcIP]++
+						if a.Evidence[sample.Key.SrcIP] >= a.Policy.MinEvidence {
+							a.Loader.AddIP(sample.Key.SrcIP, ttl)
+							a.Loader.SaveSnapshot()
+							a.Evidence[sample.Key.SrcIP] = 0
+						}
 					}
 				}
 			}()
 			if len(cap) > 5 && cap[:5] == "live:" {
 				iface := cap[5:]
 				tap.StartLive(iface, out)
+			} else if len(cap) > 6 && cap[:6] == "afxdp:" {
+				iface := cap[6:]
+				tap.StartAFXDP(iface, a.Loader, out)
 			} else {
 				tap.StartPcap(cap, out)
 			}

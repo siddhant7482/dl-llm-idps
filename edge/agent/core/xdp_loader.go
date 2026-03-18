@@ -2,7 +2,9 @@ package core
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,11 +18,17 @@ type XdpLoader struct {
 	obj         string
 	prog        link.Link
 	mBlocked    *ebpf.Map
+	mBlockedV6  *ebpf.Map
 	mCounters   *ebpf.Map
+	mXsks       *ebpf.Map
+	mQidConf    *ebpf.Map
 	expirations sync.Map
+	expirationsV6 sync.Map
 	memBlocked  sync.Map
+	memBlockedV6 sync.Map
 	memDrops    uint64
 	memPasses   uint64
+	snapshotPath string
 }
 
 type Stats struct {
@@ -48,8 +56,15 @@ func NewXdpLoader(nic, obj string) (*XdpLoader, error) {
 		return &XdpLoader{}, err
 	}
 	mBlocked := coll.Maps["blocked_ips"]
+	mBlockedV6 := coll.Maps["blocked_ipv6"]
 	mCounters := coll.Maps["counters"]
-	loader := &XdpLoader{nic: nic, obj: obj, prog: l, mBlocked: mBlocked, mCounters: mCounters}
+	mXsks := coll.Maps["xsks_map"]
+	mQidConf := coll.Maps["qidconf_map"]
+	loader := &XdpLoader{
+		nic: nic, obj: obj, prog: l,
+		mBlocked: mBlocked, mBlockedV6: mBlockedV6, mCounters: mCounters,
+		mXsks: mXsks, mQidConf: mQidConf,
+	}
 	return loader, nil
 }
 
@@ -73,22 +88,51 @@ func ipToKey(ip string) (uint32, bool) {
 	return binary.BigEndian.Uint32(v4), true
 }
 
+func ipToKeyV6(ip string) ([16]byte, bool) {
+	var out [16]byte
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return out, false
+	}
+	v6 := parsed.To16()
+	if v6 == nil || parsed.To4() != nil {
+		return out, false
+	}
+	copy(out[:], v6[:16])
+	return out, true
+}
+
 func (l *XdpLoader) AddIP(ip string, ttl time.Duration) bool {
 	key, ok := ipToKey(ip)
-	if !ok {
+	val := uint8(1)
+	if ok {
+		if l.mBlocked != nil {
+			if err := l.mBlocked.Update(&key, &val, ebpf.UpdateAny); err != nil {
+				return false
+			}
+		} else {
+			l.memBlocked.Store(key, val)
+		}
+		if ttl > 0 {
+			l.expirations.Store(key, time.Now().Add(ttl))
+			go l.expireLoop(key, ttl)
+		}
+		return true
+	}
+	key6, ok6 := ipToKeyV6(ip)
+	if !ok6 {
 		return false
 	}
-	val := uint8(1)
-	if l.mBlocked != nil {
-		if err := l.mBlocked.Update(&key, &val, ebpf.UpdateAny); err != nil {
+	if l.mBlockedV6 != nil {
+		if err := l.mBlockedV6.Update(&key6, &val, ebpf.UpdateAny); err != nil {
 			return false
 		}
 	} else {
-		l.memBlocked.Store(key, val)
+		l.memBlockedV6.Store(key6, val)
 	}
 	if ttl > 0 {
-		l.expirations.Store(key, time.Now().Add(ttl))
-		go l.expireLoop(key, ttl)
+		l.expirationsV6.Store(key6, time.Now().Add(ttl))
+		go l.expireLoopV6(key6, ttl)
 	}
 	return true
 }
@@ -96,7 +140,19 @@ func (l *XdpLoader) AddIP(ip string, ttl time.Duration) bool {
 func (l *XdpLoader) IsBlocked(ip string) bool {
 	key, ok := ipToKey(ip)
 	if !ok {
-		return false
+		key6, ok6 := ipToKeyV6(ip)
+		if !ok6 {
+			return false
+		}
+		if l.mBlockedV6 != nil {
+			var v uint8
+			if err := l.mBlockedV6.Lookup(&key6, &v); err == nil {
+				return true
+			}
+			return false
+		}
+		_, okm := l.memBlockedV6.Load(key6)
+		return okm
 	}
 	if l.mBlocked != nil {
 		var v uint8
@@ -135,10 +191,36 @@ func (l *XdpLoader) expireLoop(key uint32, ttl time.Duration) {
 	}
 }
 
+func (l *XdpLoader) expireLoopV6(key [16]byte, ttl time.Duration) {
+	time.Sleep(ttl)
+	if v, ok := l.expirationsV6.Load(key); ok {
+		if time.Now().After(v.(time.Time)) {
+			if l.mBlockedV6 != nil {
+				l.mBlockedV6.Delete(&key)
+			} else {
+				l.memBlockedV6.Delete(key)
+			}
+			l.expirationsV6.Delete(key)
+		}
+	}
+}
+
 func (l *XdpLoader) RemoveIP(ip string) bool {
 	key, ok := ipToKey(ip)
 	if !ok {
-		return false
+		key6, ok6 := ipToKeyV6(ip)
+		if !ok6 {
+			return false
+		}
+		if l.mBlockedV6 != nil {
+			if err := l.mBlockedV6.Delete(&key6); err != nil {
+				return false
+			}
+		} else {
+			l.memBlockedV6.Delete(key6)
+		}
+		l.expirationsV6.Delete(key6)
+		return true
 	}
 	if l.mBlocked != nil {
 		if err := l.mBlocked.Delete(&key); err != nil {
@@ -177,5 +259,102 @@ func (l *XdpLoader) Stats() Stats {
 			return true
 		})
 	}
+	if l.mBlockedV6 != nil {
+		it6 := l.mBlockedV6.Iterate()
+		var k6 [16]byte
+		var v6 uint8
+		for it6.Next(&k6, &v6) {
+			size++
+		}
+	} else {
+		l.memBlockedV6.Range(func(_, _ interface{}) bool {
+			size++
+			return true
+		})
+	}
 	return Stats{Drops: drops, Passes: passes, MapSize: size}
+}
+
+func (l *XdpLoader) RegisterXsk(queueID int, fd int) bool {
+	if l.mXsks == nil || l.mQidConf == nil {
+		return false
+	}
+	key := uint32(queueID)
+	val := uint32(fd)
+	if err := l.mXsks.Update(&key, &val, ebpf.UpdateAny); err != nil {
+		return false
+	}
+	one := uint32(1)
+	if err := l.mQidConf.Update(&key, &one, ebpf.UpdateAny); err != nil {
+		return false
+	}
+	return true
+}
+
+func (l *XdpLoader) UnregisterXsk(queueID int) bool {
+	if l.mXsks == nil || l.mQidConf == nil {
+		return false
+	}
+	key := uint32(queueID)
+	l.mXsks.Delete(&key)
+	l.mQidConf.Delete(&key)
+	return true
+}
+
+type snapshotEntry struct {
+	IP      string `json:"ip"`
+	Version int    `json:"version"`
+	Expiry  int64  `json:"expiry"`
+}
+
+func (l *XdpLoader) SetSnapshot(path string) {
+	l.snapshotPath = path
+}
+
+func (l *XdpLoader) SaveSnapshot() error {
+	if l.snapshotPath == "" {
+		return nil
+	}
+	var list []snapshotEntry
+	l.expirations.Range(func(k, v interface{}) bool {
+		key := k.(uint32)
+		exp := v.(time.Time)
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], key)
+		ip := net.IPv4(b[0], b[1], b[2], b[3]).String()
+		list = append(list, snapshotEntry{IP: ip, Version: 4, Expiry: exp.Unix()})
+		return true
+	})
+	l.expirationsV6.Range(func(k, v interface{}) bool {
+		key := k.([16]byte)
+		exp := v.(time.Time)
+		ip := net.IP(key[:]).String()
+		list = append(list, snapshotEntry{IP: ip, Version: 6, Expiry: exp.Unix()})
+		return true
+	})
+	b, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(l.snapshotPath, b, 0644)
+}
+
+func (l *XdpLoader) LoadSnapshot(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var list []snapshotEntry
+	if err := json.Unmarshal(b, &list); err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, e := range list {
+		exp := time.Unix(e.Expiry, 0)
+		if exp.After(now) {
+			ttl := time.Until(exp)
+			l.AddIP(e.IP, ttl)
+		}
+	}
+	return nil
 }
