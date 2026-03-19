@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"net"
 	"net/http"
 	"os"
@@ -15,7 +16,9 @@ type Agent struct {
 	Loader *core.XdpLoader
 	Policy core.Policy
 	Model  *core.DlIdsModel
-	Evidence map[string]int
+	Evidence sync.Map
+	EvidenceTTL time.Duration
+	evStop chan struct{}
 	Token string
 }
 
@@ -29,6 +32,33 @@ func ipToU32(ip string) (uint32, bool) {
 		return 0, false
 	}
 	return binary.LittleEndian.Uint32(v4), true
+}
+
+type evEntry struct {
+	Count int
+	Last  time.Time
+}
+
+func (a *Agent) startEvidenceEviction() {
+	t := time.NewTicker(30 * time.Second)
+	go func() {
+		for {
+			select {
+			case <-a.evStop:
+				t.Stop()
+				return
+			case <-t.C:
+				now := time.Now()
+				a.Evidence.Range(func(k, v interface{}) bool {
+					e := v.(evEntry)
+					if a.EvidenceTTL > 0 && now.Sub(e.Last) > a.EvidenceTTL {
+						a.Evidence.Delete(k)
+					}
+					return true
+				})
+			}
+		}
+	}()
 }
 
 func (a *Agent) handleBlock(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +159,14 @@ func main() {
 		loader.LoadSnapshot(snap)
 	}
 	model, _ := core.NewDlIdsModel(os.Getenv("MODEL_PATH"))
-	a := &Agent{Loader: loader, Policy: core.DefaultPolicy(), Model: model, Evidence: make(map[string]int), Token: os.Getenv("TOKEN")}
+	ttl := 300 * time.Second
+	if v := os.Getenv("EVIDENCE_TTL"); v != "" {
+		if s, err := time.ParseDuration(v + "s"); err == nil && s > 0 {
+			ttl = s
+		}
+	}
+	a := &Agent{Loader: loader, Policy: core.DefaultPolicy(), Model: model, EvidenceTTL: ttl, evStop: make(chan struct{}, 1), Token: os.Getenv("TOKEN")}
+	a.startEvidenceEviction()
 	http.HandleFunc("/block", a.handleBlock)
 	http.HandleFunc("/unblock", a.handleUnblock)
 	http.HandleFunc("/stats", a.handleStats)
@@ -156,11 +193,16 @@ func main() {
 					features := core.BuildFeatures(sample.Key, fs)
 					pred, _ := a.Model.Predict(features)
 					if ok, ttl := a.Policy.ShouldBlock(pred); ok {
-						a.Evidence[sample.Key.SrcIP]++
-						if a.Evidence[sample.Key.SrcIP] >= a.Policy.MinEvidence {
+						ce := evEntry{Count: 1, Last: time.Now()}
+						if v, ok := a.Evidence.Load(sample.Key.SrcIP); ok {
+							prev := v.(evEntry)
+							ce.Count = prev.Count + 1
+						}
+						a.Evidence.Store(sample.Key.SrcIP, ce)
+						if ce.Count >= a.Policy.MinEvidence {
 							a.Loader.AddIP(sample.Key.SrcIP, ttl)
 							a.Loader.SaveSnapshot()
-							a.Evidence[sample.Key.SrcIP] = 0
+							a.Evidence.Delete(sample.Key.SrcIP)
 						}
 					}
 				}

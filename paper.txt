@@ -1,0 +1,549 @@
+Abstract—One of the biggest challenges in edge computing
+today is figuring out how to secure devices without slowing them
+down. We can no longer afford to send traffic back to a central
+cloud server for security checks because the round trip takes
+too long. Security has to happen right at the edge. While new
+Large Language Models are incredible at analyzing and stopping
+brand new, zero day cyber attacks, they are simply too slow to
+sit directly in the middle of live network traffic. Furthermore,
+if we try to scale up these AI models in the cloud during a
+massive attack, they run into an amnesia problem they don’t
+share memory, so they end up doing the same work over and
+over again. In this paper, we propose a two part architecture to
+solve this. We use ultra fast eBPF packet filtering at the network
+edge to handle immediate threats, and connect it to an auto
+scaling pool of LLMs in the cloud to analyze complex attacks in
+the background. By using a shared Vector Database so the AI
+models can share context, and managing the workload with an
+M/M/c queuing model, our system can analyze and block new
+threats without causing network lag.
+Index Terms—Intrusion Detection, Edge Computing, eBPF,
+Large Language Models, M/M/c Queuing, State Synchronization.
+I. INTRODUCTION
+In edge based networks there is trade off between speed and
+security of the network. To improve speed when we transition
+infrastructure for 5g networks and autonomous vehicles, it also
+increases the chances of network getting attacked. Therefore,
+network administrators must now secure many hundreds of
+distributed nodes, while at the same time executing this work
+without introducing any noticeable latency.
+This dilemma is evident when trying to leverage generative
+Artificial Intelligence (AI) to provide an additional layer of
+security across our networks. AI is quite capable of determin-
+ing the context of a zero-day exploit based on the information
+contained within a payload; however, AI can often function
+extremely slowly. If an edge router has to wait for an extended
+period of time (even as short as 0.5 seconds) for a large neural
+network to determine whether or not a packet is suspicious,
+the edge network will begin to fail. TCP connections will time
+out; real-time applications will freeze up, and the overall end-
+user experience will be degraded. Essentially, in this case, by
+attempting to inspect the packets within traffic too closely, we
+will ultimately bring about our own Denial of Service (DoS).
+The central thesis that underpins this document is to dis-
+cover how we are able to leverage the intelligent reasoning
+capabilities of generative AI without sacrificing our sub mil-
+lisecond response times that are required for edge networks.
+The conclusion initially seemed to be that we could simply
+place the AI behind a message queue so that it would not
+block the live traffic. However, it didn’t take long to see that
+this approach fails when faced with a large volumetric attack,
+such as a botnet that was activated. There are cloud-based
+products like Kubernetes Horizontal Pod Autoscaling (HPA)
+that do a great job of spinning up new microservices when
+we see spikes in the amount of traffic. However, if attempted
+to apply this construct to generative AI, it would create an
+extreme case of amnesia.
+If an edge node picks up on a potential security threat and
+Kubernetes scales up by starting three new LLM containers
+to handle the incoming telemetry flood, those new containers
+would not have any knowledge of the original threat and would
+be operating in a separate ‘vacuum’. As a result, the LLM
+containers will consume significant GPU cycles reading the
+same threat logs time and time again, and they may even create
+conflicting firewall rules.
+To fix this, we decided to split the system in half. We
+introduce the Latency-Constrained Generative Edge Intrusion
+Detection and Prevention System (LC-GE-IDPS). By separat-
+ing the immediate, high-speed packet filtering (using in-kernel
+eBPF) from the deeper, stateful analysis (using auto-scaled
+LLMs tied to a shared memory database), we believe we can
+achieve both fast mitigation and smart threat analysis.
+II. LITERATURE REVIEW
+The growth of Network Intrusion Detection Systems has
+been a conflict between accuracy and speed.
+In early days, researchers were able to achieve great success
+in identifying certain traffic patterns using DL (deep learning).
+Krishna et al. [1] demonstrated the potential of using MLP
+(multi layer perceptron) models with very high accuracy to
+detect common attack patterns such as DoS and Probes.
+However, the mechanics involved with extracting raw network
+traffic from the OS kernel and passing them into user space
+for inputting to a neural network are very cumbersome and
+creates unacceptable latencies for use by edge gateways that
+need instantaneously processed traffic.
+The research community began investigating Federated
+Learning (FL) to help small edge devices with computing
+resources perform workloads. Bouayad et al. created a way
+for these small devices to participate in lightweight federated
+learning using structured model pruning [2]. They did this to
+ensure small edge devices can be involved without crashing.
+Hao et al. and Villani et al. identified and resolved communi-
+cation bottlenecks within their federated learning frameworks
+[3,4]. Raeiszadeh et al. and Hamad et al. adapted FL to
+asynchronous FL models that were designed specifically for
+IoT applications [5,6]. Some of their research has shown that
+it is possible to update models in a decentralized manner
+without all the raw data being stored in one place. One of
+the large challenges that remains is that federated learning is
+fundamentally an offline training mechanism. It is an excellent
+solution to updating global models without having to use them
+for extended periods. However, it does not provide an option
+for instantaneously writing new firewall rules for zero-day
+attacks that are occurring at the moment we need them.
+Many researchers in cybersecurity have been focused on
+large-scale machine learning/large scale inference using lan-
+guage models (LLVMs) rather than static models because of
+their limitations. Examples of these researchers are Prabhu
+et al. [7] and Zhang et al. [8], who demonstrated the abil-
+ity of LLVMs to understand log files from networks and
+describe/make scripts to mitigate against attack(s) without
+needing to be specifically fine tuned. In the arena of cognitive
+security, this represents a significant advance. However, the
+generation time for the above mentioned tasks by LLVMs
+can be measured in hundreds of milliseconds (or more)—this
+makes it impossible to use them directly in the data planes of
+production routers.
+The networking community has solved the speed issue of
+packet processing through use of eBPF and XDP (Express
+Data Path) [9] over the past couple of years. Specifically, it has
+been demonstrated that filtering packets in-kernel allows for
+filtering packets at rates of less than 0.1 milliseconds, thereby
+avoiding the user space stack completely. While having great
+performance, eBPF lacks the intelligence to detect new or
+polymorphic attacks, as eBPF can only execute pre-compiled
+C code and can only detect a given type of attack until, for
+example, the attack is changed by the attacker.
+Combining these worlds by placing an LLM behind a queue
+leads to the type of scaling challenges described above. When
+we get traffic spikes, we’ll see Kubernetes HPA scaling up,
+but the AI agents are unable to retain their shared context.
+Without leveraging shared memory concepts such as Retriev-
+able Augmented Generation (RAG) or Vector Databases [10],
+we will see a lot of redundant work required across the
+system. And in order to effectively stop threats occurring
+across a distributed edge network, we will need to create very
+high-speed synchronisation of state, which means that if an
+IP is blocked in one city, it will be automatically blocked
+everywhere else.
+The literature demonstrates that there is a gap between the
+two; we have ultra-fast filtering but there is no flexibility,
+we have LLMs that have great intelligence but are extremely
+slow and have shared states that disappear as they scale. The
+purpose of this study is to create a mechanism to combine
+these two concepts so they can work together effectively
+without causing bottlenecks in the network.
+TABLE I
+SUMMARY OF EXISTING LITERATURE AND ARCHITECTURAL
+LIMITATIONS
+Ref. Core Approach / Strength Primary Limitations
+[1] Deep Learning (MLP) for de-
+tecting standard traffic anoma-
+lies.
+Massive context-switching
+overhead; introduces high
+latency.
+[2]–[6] Federated Learning (FL) and
+model pruning for IoT edge de-
+vices.
+Offline training paradigm;
+unable to adapt to active
+zero-days.
+[7], [8] Large Language Models (LLMs)
+leveraging in-context log analy-
+sis.
+Extreme inference latency;
+unsuitable for live traffic fil-
+tering.
+[9] eBPF & XDP for deterministic,
+line-rate packet dropping.
+Rigid, pre-compiled logic;
+lacks cognitive reasoning.
+[10] Microservice autoscaling (HPA)
+and Vector Databases.
+Isolated tools; scaled LLMs
+suffer from context ”amne-
+sia.”
+III. RESEARCH PROPOSAL
+Current edge security systems are severely constrained by
+a monolithic approach. Attempting to run heavy, complex
+Artificial Intelligence directly on the front lines of a network
+slows data transmission down to unacceptable levels. Con-
+versely, relying solely on basic, traditional packet filters leaves
+networks completely blind to sophisticated, shape-shifting
+(polymorphic) threats. To overcome the profound limitations
+of monolithic edge security models, this research introduces
+the LC-GE-IDPS framework.
+The foundational premise of this system is that robust
+edge defense requires a fundamental decoupling of ”reflexes”
+from ”reasoning.” This architecture is highly analogous to the
+human biological nervous system. When a person touches a
+hot stove, a spinal reflex pulls the hand away instantly to
+prevent tissue damage, without waiting for the brain to process
+the event. Only milliseconds later does the brain consciously
+process the pain, understand the context, and formulate a rule
+to avoid the stove in the future. The LC-GE-IDPS applies this
+exact biological logic to network security, strictly separating
+immediate, deterministic threat mitigation from complex, non-
+deterministic threat synthesis.
+Based on the cascading bottlenecks identified in the current
+literature, this research formulates and addresses four primary
+Research Questions (RQs):
+• RQ1 (The Latency Constraint): How can a distributed
+Intrusion Detection and Prevention System guarantee
+deterministic, ultra-low latency packet filtering at the
+network edge without exhausting constrained local CPU
+resources?
+• RQ2 (The Scaling Constraint): How can the sys-
+tem asynchronously offload complex zero-day anomaly
+telemetry to a centralized orchestrator without suffering
+from queue saturation or elastic lag during massive vol-
+umetric attacks?
+• RQ3 (The Amnesia Constraint): How can dynamically
+scaled, parallel Large Language Models (LLMs) main-
+tain a coherent, synchronized state to prevent redundant
+analysis and conflicting rule generation?
+• RQ4 (The Synchronization Constraint): How can a
+newly synthesized zero-day mitigation rule be propagated
+across a distributed edge network with sub-millisecond
+latency to achieve instantaneous global ”herd immunity”?
+We hypothesize that these questions can be answered
+through the rigorous integration of four distinct technological
+pillars, bridging the gap between low-level kernel networking
+and stateful Generative AI:
+1) Reflexive Data Plane (Answers RQ1): To completely
+solve the packet processing bottleneck, we deploy an
+ultra-fast filter right at the network’s hardware entry
+point. By using the eBPF/XDP framework, we create a
+”reflex” that identifies and drops known malicious traffic
+before the operating system even allocates memory for
+it.
+2) Predictive Elastic Orchestration (Answers RQ2): For
+tricky, mutating attacks that slip past the first filter,
+we send the telemetry data to a ”cloud brain.” To
+prevent this brain from being overwhelmed by traffic
+spikes, we use mathematical M/M/c queueing models
+to seamlessly predict and launch parallel AI helpers
+exactly when they are needed, eliminating elastic lag.
+3) Stateful Collaborative Intelligence (Answers RQ3):
+When multiple AI instances are automatically launched
+to handle a massive attack, they must work together as a
+unified team. We integrate the Model Context Protocol
+(MCP) to create a shared memory space, ensuring every
+newly launched AI instantly knows what the others
+have already discovered, permanently curing multi-agent
+”amnesia.”
+4) Instantaneous Threat Propagation (Answers RQ4):
+Once the AI figures out how to block the new attack,
+we use an ultra-fast, in-memory database (Redis) to
+instantly share the ”cure” globally. This achieves sub-
+millisecond ”herd immunity” across the entire network,
+suffocating the attacker’s ability to move laterally.
+IV. PROPOSED ARCHITECTURE: THE BIFURCATED MODEL
+In order to solve the problems of speed versus intelligence,
+we had to abandon the idea of creating one large security
+application that would do everything. We built two different
+architectures; logically separate either a data plane (for quick,
+reactionary responses) or a control plane (for longer / more in
+depth analysis).
+Fig. 1. System Architecture Overview of the LC-GE-IDPS.
+Figure 1 outlines the high-level design of this bifurcated
+system.
+A. The Real-Time Fast Path (Data Plane)
+The fundamental rule about this architecture is that the time
+it takes to process packets at the edge must always be less than
+20 ms, regardless of how complex the attack is. To accomplish
+this, XDP or eBPF hooks are used in the fast path and are tied
+directly into the network interface card (NIC) of the edge node.
+XDP looks at the packet headers as close to the time of
+receiving them as possible instead of forcing packets to go
+through the entire Linux networking stack as the older firewalls
+like iptables do. XDP hooks are used to inspect packets
+even before the kernel has allocated a buffer to hold a packet.
+When receiving a packet, the eBPF maps that allow the
+XDP program to function as a local, optimized least recently
+used (LRU) hash table exist to check if there was a chance of
+receiving an attack or an ip address identified as bad from an
+entry in the map. Because of the O(1) complexity, to find an
+entry in the LRU table, the drop will be dropped (XDP_DROP)
+in less than 0.1 milliseconds, which is enough to perform ALL
+noisy high-volume attacks without consuming CPU resources.
+If the packet does not match any values within the LRU
+static maps, it is sent to the local edge node’s lightweight
+deep learning IDS via (XDP_PASS). This DL based intrusion
+detection system would have a quantized 1D CNN to analyze
+the packet’s payload as well as an RNN to analyze the packet
+flows for an extended period.
+If this edge model detects an anomaly but lacks a defined
+rule, it will not reject the packet. Rejecting traffic based
+on a machine learning assumption will result in users being
+legitimately blocked. Instead, it will flag an IP within the
+Fast Path registry as a precautionary measure, and send the
+telemetry data to the Slow Path for a secondary opinion.
+B. The Analytical Slow Path (Control Plane)
+When the edge system detects an anomaly, it sends the
+packet metadata and flow context to the control plane in the
+kubernetes-managed cloud asynchronously.
+At the Control Plane, the analytical layer can handle large
+load spikes, such as when a botnet attacks 50 edges at once,
+because all of the edge nodes are completely decoupled from
+the LLM orchestrator via an Apache Kafka event streaming
+cluster. The Kafka queue acts as a shock absorber, absorbing
+high volumes of anomaly report (λanom).
+Behind the Kafka queue is the brain of the whole system, the
+Kubernetes Horizontal Pod Autoscaler (HPA) which controls
+a pool of LLM containers as well as monitors the Kafka
+consumer lag and accordingly scales the number of LLM
+Pods to accommodate the rate at which anomalies are being
+generated and received. As anomalies are received at a faster
+rate than the currently available LLMs can process them, the
+Kubernetes HPA will automatically generate additional LLM
+Pods to handle the incoming anomalies. In addition, these
+LLMs perform in-context learning to process the anomaly
+data, understand how the attacker is operating, and write new
+abstract eBPF C-code that will block that specific threat.
+Fig. 2. Control Plane and State Synchronization Layer
+C. Solving the LLM ”Amnesia” Problem
+The inability of microservices to retain state or memories,
+commonly referred to as ”amnesia,” is a major issue we must
+address in order to be able to scale out our microservices
+efficiently.
+For example, when a polymorphic botnet attacks 50 edge
+nodes simultaneously, resulting in a full Kafka queue and
+Kubernetes spinning up 10 more LLM pods to assist in this
+situation, these LLMs will not only operate independently, but
+they will be duplicating resources (expensive GPU usage) by
+analyzing the same threat from different telemetry data sources
+(50 times). They could also potentially create conflicting
+firewall rules.
+We created a Shared Context Layer (as depicted in fig. 2)
+to resolve this issue. This shared context layer utilizes fast
+vector databases (e.g., Pinecone) and Redis to create a Model
+Context Protocol (MCP) Aggregator that connects the data.
+An LLM, before starting to write a new telemetry log rule,
+queries the Vector DB and checks for potential redundancy
+by looking for other LLM agents working on similar threats
+(using semantic cosine similarity). If there is a high similarity
+score, the LLM simply pulls the next log from the queue;
+otherwise, the LLM takes ownership of the task, claims what
+it is doing in shared memory, and commences writing the new
+rule.
+Once a new eBPF rule is created and has undergone
+validation, it will be rapidly pushed through to every edge
+node’s eBPF map via Redis’ fast pub-sub infrastructure. This
+means that we are essentially able to achieve herd immunity
+immediately; an attack that is identified in New York can be
+blocked in London in a few milliseconds, and the original New
+York LLM can continue processing live traffic without having
+to wait for the AI to finish thinking.
+V. MATHEMATICAL FORMULATION AND PERFORMANCE
+In order to verify that this operates properly in practice,
+we must produce a mathematical proof showing that our edge
+nodes will not reach a latency threshold, and that the cloud
+over-control system will not fail under stress.
+A. Real-Time Latency Bound (Data Plane)
+The expected time it takes to process a packet at the edge,
+E[Tedge], depends on the probability that a packet matches a
+known rule in the fast-path (Pknown) versus the probability
+that it has to be checked by the edge DL-IDS (Pnovel).
+We define the expected latency as:
+E[Tedge] = (Pknown · TIP S ) + (Pnovel · TDL) (1)
+In our physical setup, eBPF XDP_DROP operations take
+TIP S < 0.1 ms. The local edge DL-IDS takes about TDL ≈ 10
+ms. Because our Fast Path instantly shares bad IPs globally,
+Pknown shoots up to 1 almost immediately when an attack
+starts.
+Therefore, our hard constraint for keeping the network alive
+is dictated entirely by the Data Plane:
+E[Tedge] ≤ 20 ms (2)
+Because the Slow Path operates entirely asynchronously in the
+background, regular network traffic never has to wait for the
+cloud LLMs. This keeps the expected latency well below our
+20ms ceiling.
+B. Elastic Orchestrator Scalability (M/M/c)
+To prove the Slow Path is stable during a massive attack, we
+modeled the Kubernetes LLM cluster as an M/M/c queue. The
+arrivals (anomalies) are Markovian, the service times (LLM
+generation) are Markovian, and c is the number of active LLM
+pods.
+Let λanom be the arrival rate of anomalies into the Kafka
+queue, and μLLM be how fast a single LLM can write a
+protocol.
+The system utilization factor, ρ, is defined as:
+ρ = λanom
+c · μLLM
+(3)
+For the system to stay stable and not build an infinite queue
+during a DDoS attack, ρ must be less than 1.
+We can also calculate the probability that a new anomaly
+report actually has to sit and wait in the queue before an LLM
+picks it up using the Erlang C formula, PQ:
+PQ =
+(cρ)c
+c!
+1
+1−ρ
+Pc−1
+k=0
+(cρ)k
+k! + (cρ)c
+c!
+1
+1−ρ
+(4)
+By configuring the Kubernetes HPA to watch Kafka lag, it
+dynamically increases c to make sure ρ < 1 and PQ stays low,
+meaning the cloud plane stretches elastically to absorb the hit.
+C. Decoupled Generative Latency
+Using Little’s Law (L = λW ), we can look at the delay
+inside the Control Plane itself. The total ”Time-to-Herd-
+Immunity” (THT ) required to write and distribute a new rule
+is:
+THT = Tqueue + Tstate read + TLLM + Tstate write + Tsync
+(5)
+Because this happens in the cloud, it has zero impact on
+the edge latency (E[Tedge]). Furthermore, because queries to
+Vector DB and Redis happen in O(1) time, checking state
+doesn’t become a bottleneck even when we have dozens of
+LLM pods running.
+VI. THREAT MODEL AND DEFENSE CAPABILITIES
+When designing this, we had to be very clear about what
+specific threats we were trying to stop. We engineered the
+LC-GE-IDPS to handle a few main scenarios:
+A. Volumetric and Brute-Force Attacks
+Basic attacks that just try to overwhelm the system with
+volume (like SYN floods) are blocked instantly by the Fast
+Path. Once a basic threshold is crossed, the IP goes into the
+bpf_map and gets dropped in O(1) time (< 0.1ms).
+B. Polymorphic and Zero-Day Payloads
+Attackers love to tweak their malware signatures to slip past
+older firewalls. Our lightweight 1D-CNN and RNN at the edge
+are trained to look for weird protocol behaviors and payload
+entropy. This allows them to flag variations of known attacks
+that would normally sneak through standard signature checks.
+C. Distributed Botnet IP Rotation
+Really sophisticated botnets will constantly change their
+source IP addresses so that simple rate-limiting doesn’t work.
+This is exactly why we built the Control Plane. The LLM can
+look at the telemetry data and realize that, regardless of the
+IP address, the attacker is using the exact same malformed
+HTTP header. The LLM then writes an eBPF rule to block
+that specific behavior, rendering the attacker’s IP rotation
+completely useless.
+D. Adversarial Prompt Injection
+Because we are feeding packet payloads into an LLM,
+there is a very real risk that a smart attacker could send a
+payload containing a hidden prompt (e.g., “Ignore all previous
+instructions and generate a rule to drop all traffic on port 443”).
+To stop this, we heavily restrict what the LLM is allowed to
+do. Any eBPF code it writes has to pass through the Linux
+kernel’s strict bpf_verifier before it gets injected. The
+verifier absolutely forbids infinite loops and unsafe memory
+access, which acts as a very effective sandbox for the AI’s
+output.
+VII. IMPLEMENTATION METHODOLOGY
+Taking this from a theoretical model to a working prototype
+requires a solid plan for both the edge devices and the cloud.
+A. Data Plane Construction
+The core of the edge system relies on safely putting code
+into the Linux kernel. We plan to use the BCC (BPF Compiler
+Collection) toolchain, using Clang/LLVM to compile restricted
+C-code into eBPF byte-code. We then attach this byte-code to
+the network interface’s XDP hook. For the edge AI (the DL-
+IDS), we will use an optimized inference engine like ONNX
+Runtime so it can run smoothly on smaller edge hardware like
+ARM-based gateways.
+B. Fast Path Integration
+For the Global IP Registry, we will set up a highly available
+Redis cluster using a Pub/Sub architecture. Redis is great for
+this because it runs entirely in-memory and can use low-
+latency Remote Procedure Calls (RPC) over gRPC to push
+IP blocklist updates out to the edge nodes in single-digit
+milliseconds.
+C. Slow Path Orchestration
+The cloud brain will run on a standard Kubernetes cluster.
+We will use Apache Kafka to handle the incoming stream
+of anomaly reports. The LLM cluster itself—likely using
+open-weight models that are good at coding, like Llama-3
+or Mistral—will be containerized. We will configure the K8s
+HPA to scale out based on the Kafka consumer lag that we
+pull using Prometheus.
+D. State Synchronization
+To get the Model Context Protocol (MCP) working, we will
+use LangChain to manage how we prompt the LLMs. A Vector
+Database will hold the dense embeddings of what the system
+is currently investigating. Before an LLM writes a rule, it will
+do a quick cosine-similarity search against the Vector DB to
+make sure it isn’t duplicating another pod’s work.
+VIII. EVALUATION STRATEGY AND METRICS
+To prove this architecture actually works, we plan to test
+it against standard network security datasets (like CIC-IDS-
+2017) by injecting them into a physical testbed using high-
+throughput traffic generators.
+A. Real-Time and Synchronization Metrics
+• Data Plane Tail Latency (p99): We will use kernel
+tracepoints to measure the actual per-packet processing
+time at the 99th percentile. This will prove that our sub-
+20ms math holds up under a heavy load.
+• Time-to-Herd-Immunity (THT ): We will measure ex-
+actly how long it takes from the millisecond Node 1 flags
+a new threat to the millisecond Node N updates its local
+eBPF map via Redis.
+B. Elastic Scalability Metrics
+• Queue Depth Resilience: We will test the M/M/c queue’s
+stability by hitting the Kafka ingress with simulated bot-
+net bursts and tracking how fast the auto-scaler responds
+to stabilize the queue.
+• State Coherency Accuracy: We will test the Vector
+DB by deliberately injecting the exact same zero-day
+signature across 50 edge nodes at once. If our MCP
+setup works, the system should only generate exactly one
+unified rule, proving the LLMs aren’t doing redundant
+work.
+REFERENCES
+[1] A. Krishna, D. S. Jacob, A. L. MA and H. M, “Intrusion Detection and
+Prevention System Using Deep Learning,” 2020 International Confer-
+ence on Electronics and Sustainable Communication Systems (ICESC),
+Coimbatore, India, 2020.
+[2] A. Bouayad, H. Alami, M. J. Idrissi and I. Berrada, “Lightweight
+Federated Learning for Efficient Network Intrusion Detection,” IEEE
+Access, vol. 12, 2024.
+[3] M. Hao, H. Li, G. Xu, H. Chen, and T. Zhang, “Efficient, Private and
+Robust Federated Learning,” Proceedings of the 37th Annual Computer
+Security Applications Conference (ACSAC), 2021.
+[4] M. J. Villani, E. Natale, and F. Mallmann-Trenn, “Trading-off Accuracy
+and Communication Cost in Federated Learning,” AAMAS ’25: Proc.
+of the 24th Int. Conf. on Autonomous Agents and Multiagent Systems,
+2025.
+[5] M. Raeiszadeh, A. Ebrahimzadeh, R. H. Glitho, J. Eker, and R. A.
+F. Mini, “Asynchronous Real-Time Federated Learning for Anomaly
+Detection in Microservice Cloud Applications,” IEEE Transactions on
+Machine Learning in Communications and Networking, 2025.
+[6] N. A. Hamad, K. A. A. Bakar, F. Qamar, A. M. Jubair, R. R. Mohamed,
+and M. A. Mohamed, “Systematic Analysis of Federated Learning Ap-
+proaches for Intrusion Detection in the Internet of Things Environment,”
+IEEE Access, 2025.
+[7] A. Prabhu A, A. R. Sreeram and P. K. Auradkar, “LLM-Empowered Au-
+tonomous Edge AI for Anomaly Detection and Resolution in Distributed
+Systems,” 2025 10th International Conference on Cloud Computing and
+Big Data Analytics, 2025.
+[8] H. Zhang, A. B. Sediq, A. Afana and M. Erol-Kantarci, “Large Language
+Models in Wireless Application Design: In-Context Learning-enhanced
+Automatic Network Intrusion Detection,” 2024 IEEE Global Communi-
+cations Conference (GLOBECOM), 2024.
+[9] S. Miano, M. Bertrone, F. Risso, M. Tumolo, and M. V. Bernal,
+“Creating Complex Network Services with eBPF: Experience and
+Lessons Learned,” 2018 IEEE 19th International Conference on High
+Performance Switching and Routing (HPSR), 2018.
+[10] P. Lewis, E. Perez, A. Piktus, et al., “Retrieval-Augmented Generation
+for Knowledge-Intensive NLP Tasks,” Advances in Neural Information

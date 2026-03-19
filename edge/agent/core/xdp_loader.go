@@ -50,7 +50,6 @@ func NewXdpLoader(nic, obj string) (*XdpLoader, error) {
 	l, err := link.AttachXDP(link.XDPOptions{
 		Program:   prog,
 		Interface: ifaceIndex(nic),
-		Flags:     link.XDPGeneric,
 	})
 	if err != nil {
 		return &XdpLoader{}, err

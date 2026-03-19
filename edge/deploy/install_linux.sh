@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -e
 sudo apt-get update
-sudo apt-get install -y clang llvm libelf-dev linux-headers-$(uname -r) bpftool iproute2 make gcc pkg-config golang
+sudo apt-get install -y clang llvm libelf-dev linux-headers-$(uname -r) linux-tools-common iproute2 make gcc pkg-config golang
 cd "$(dirname "$0")"/..
-clang -O2 -g -Wall -target bpf -c bpf/xdp_blocklist.c -o bpf/xdp_blocklist.o
+clang -O2 -g -Wall -target bpf -I/usr/include -I/usr/include/x86_64-linux-gnu -c bpf/xdp_blocklist.c -o bpf/xdp_blocklist.o
 cd agent
 go build -o ../../bin/edge-agent ./cmd/edge-agent
 sudo install -m 0755 ../../bin/edge-agent /usr/local/bin/edge-agent

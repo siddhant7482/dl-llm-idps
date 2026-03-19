@@ -4,7 +4,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/asavie/xdp"
+	"github.com/planktonzp/xdp"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -22,13 +22,21 @@ type FlowSample struct {
 }
 
 func canon(key FlowKey, src string, dst string, sp, dp uint16) (FlowKey, bool) {
-	a := []byte(src)
-	b := []byte(dst)
-	for i := 0; i < len(a) && i < len(b); i++ {
-		if a[i] < b[i] {
+	ai := net.ParseIP(src)
+	bi := net.ParseIP(dst)
+	if ai == nil || bi == nil {
+		return FlowKey{SrcIP: src, DstIP: dst, SrcPort: sp, DstPort: dp, Proto: key.Proto}, true
+	}
+	ab := ai.To16()
+	bb := bi.To16()
+	if ab == nil || bb == nil {
+		return FlowKey{SrcIP: src, DstIP: dst, SrcPort: sp, DstPort: dp, Proto: key.Proto}, true
+	}
+	for i := 0; i < 16; i++ {
+		if ab[i] < bb[i] {
 			return FlowKey{SrcIP: src, DstIP: dst, SrcPort: sp, DstPort: dp, Proto: key.Proto}, true
 		}
-		if a[i] > b[i] {
+		if ab[i] > bb[i] {
 			return FlowKey{SrcIP: dst, DstIP: src, SrcPort: dp, DstPort: sp, Proto: key.Proto}, false
 		}
 	}
@@ -337,7 +345,7 @@ func (p *PacketTap) StartAFXDP(iface string, loader *XdpLoader, out chan<- FlowS
 	}
 	loader.RegisterXsk(0, xsk.FD())
 	for {
-		xsk.Fill(xsk.GetDescs(xsk.NumFreeFillSlots()))
+		xsk.Fill(xsk.GetDescs(xsk.NumFreeFillSlots(), true))
 		numRx, _, err := xsk.Poll(-1)
 		if err != nil {
 			continue

@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: edge-agent
+  namespace: edge-security
+spec:
+  selector:
+    matchLabels:
+      app: edge-agent
+  template:
+    metadata:
+      labels:
+        app: edge-agent
+    spec:
+      hostNetwork: true
+      hostPID: true
+      containers:
+      - name: edge-agent
+        image: edge-agent:latest
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["SYS_ADMIN", "NET_ADMIN"]
+        env:
+        - name: NIC
+          value: "eth0"
+        - name: PCAP
+          value: "live:eth0"
+        - name: PORT
+          value: "8080"
+        - name: BLOCKLIST_SNAPSHOT
+          value: "/var/lib/idps/blocklist.json"
+        - name: XDP_OBJ
+          value: "/usr/local/lib/idps/xdp_blocklist.o"
+        - name: IDS_URL
+          value: "http://127.0.0.1:5000/predict"
+        volumeMounts:
+        - name: idps-data
+          mountPath: /var/lib/idps
+      volumes:
+      - name: idps-data
+        hostPath:
+          path: /var/lib/idps
+          type: DirectoryOrCreate

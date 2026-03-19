@@ -1,0 +1,99 @@
+{
+  "Benign": {
+    "precision": 0.9997794452417674,
+    "recall": 0.9688087259848409,
+    "f1-score": 0.9840504629335302,
+    "support": 655055.0
+  },
+  "Bot": {
+    "precision": 0.9310701807358841,
+    "recall": 0.9956180811808119,
+    "f1-score": 0.9622628892405769,
+    "support": 21680.0
+  },
+  "Brute Force -Web": {
+    "precision": 0.03754266211604096,
+    "recall": 0.927710843373494,
+    "f1-score": 0.07216494845360824,
+    "support": 83.0
+  },
+  "Brute Force -XSS": {
+    "precision": 0.76,
+    "recall": 0.5588235294117647,
+    "f1-score": 0.6440677966101694,
+    "support": 34.0
+  },
+  "DDOS attack-HOIC": {
+    "precision": 0.9881078574267921,
+    "recall": 1.0,
+    "f1-score": 0.9940183614642518,
+    "support": 29829.0
+  },
+  "DDOS attack-LOIC-UDP": {
+    "precision": 0.7046070460704607,
+    "recall": 1.0,
+    "f1-score": 0.8267090620031796,
+    "support": 260.0
+  },
+  "DDoS attacks-LOIC-HTTP": {
+    "precision": 0.9800553887686472,
+    "recall": 0.9758878396384914,
+    "f1-score": 0.9779671742828446,
+    "support": 86305.0
+  },
+  "DoS attacks-GoldenEye": {
+    "precision": 0.6793776024545255,
+    "recall": 0.9982289486395105,
+    "f1-score": 0.8085023146638847,
+    "support": 6211.0
+  },
+  "DoS attacks-Hulk": {
+    "precision": 0.6332117320881366,
+    "recall": 0.9961891643709826,
+    "f1-score": 0.774270675350165,
+    "support": 21780.0
+  },
+  "DoS attacks-SlowHTTPTest": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 8.0
+  },
+  "DoS attacks-Slowloris": {
+    "precision": 0.5568138920347301,
+    "recall": 0.9925975773889637,
+    "f1-score": 0.713422007255139,
+    "support": 1486.0
+  },
+  "FTP-BruteForce": {
+    "precision": 0.05405405405405406,
+    "recall": 1.0,
+    "f1-score": 0.10256410256410256,
+    "support": 8.0
+  },
+  "SQL Injection": {
+    "precision": 1.0,
+    "recall": 0.23076923076923078,
+    "f1-score": 0.375,
+    "support": 13.0
+  },
+  "SSH-Bruteforce": {
+    "precision": 0.9942756183745584,
+    "recall": 0.9973063018359679,
+    "f1-score": 0.9957886541387975,
+    "support": 14107.0
+  },
+  "accuracy": 0.9727672164605985,
+  "macro avg": {
+    "precision": 0.665635391383257,
+    "recall": 0.8315671601852898,
+    "f1-score": 0.6593420320685892,
+    "support": 836859.0
+  },
+  "weighted avg": {
+    "precision": 0.9825362448621885,
+    "recall": 0.9727672164605985,
+    "f1-score": 0.9759882522781331,
+    "support": 836859.0
+  }
+}
