@@ -17,7 +17,7 @@
   - scp -r IDPS <vm-user>@<vm-ip>:/home/<vm-user>/IDPS
 - Compile XDP program:
   - cd ~/IDPS/edge/bpf
-  - clang -O2 -target bpf -c xdp_blocklist.c -o xdp_blocklist.o
+  - clang -O2 -target bpf -I/usr/include -I/usr/include/x86_64-linux-gnu -c xdp_blocklist.c -o xdp_blocklist.o
 - Verify object:
   - file xdp_blocklist.o
   - Optional: bpftool prog dump xdp_blocklist.o
@@ -41,6 +41,16 @@
 - Alternative: Replay a PCAP
   - NIC=eth0 XDP_OBJ=../../bpf/xdp_blocklist.o PCAP=/path/to/attack.pcap PORT=8080 go run ./cmd/edge-agent
 
+## Install via Portable Tarball
+- Build on a build host:
+  - bash edge/deploy/package_node.sh
+  - scp dist/edge-agent-node.tar.gz <vm-user>@<vm-ip>:/tmp/
+- Install on the VM:
+  - mkdir -p ~/edge && tar -xzf /tmp/edge-agent-node.tar.gz -C ~/edge
+  - bash ~/edge/edge-agent/install.sh
+  - sudo nano /etc/default/edge-agent   # set NIC, PCAP, paths
+  - sudo systemctl start edge-agent
+
 ## Validate Enforcement
 - Manual control:
   - curl -X POST "http://localhost:8080/block?ip=10.0.0.1&ttl=300"
@@ -60,4 +70,3 @@
   - If VLAN or IPv6 is in use, extend program to parse 802.1Q and add IPv6 path.
 - Metrics:
   - Expose Prometheus metrics (p95/p99 latency, decision-to-enforcement, blocklist churn) for observability.
-

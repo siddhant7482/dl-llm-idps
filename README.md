@@ -45,6 +45,45 @@ Run the Python pipeline harness to drive end‑to‑end decisions and call the a
 python edge/tools/pipeline_harness.py --ids http://127.0.0.1:5000/predict --agent http://<agent-ip>:8080 --token <TOKEN> --duration 30
 ```
 
+### Packaging (Install on any node)
+
+- Build a portable tarball:
+
+```bash
+bash edge/deploy/package_node.sh
+# output: dist/edge-agent-node.tar.gz
+```
+
+- Install on a target node:
+
+```bash
+scp dist/edge-agent-node.tar.gz <user>@<node>:/tmp/
+ssh <user>@<node> 'mkdir -p ~/edge && tar -xzf /tmp/edge-agent-node.tar.gz -C ~/edge && bash ~/edge/edge-agent/install.sh'
+ssh <user>@<node> 'sudo nano /etc/default/edge-agent && sudo systemctl start edge-agent'
+```
+
+### Container (Docker)
+
+- Build the agent image:
+
+```bash
+cd edge/agent
+docker build -t edge-agent:latest .
+```
+
+### Kubernetes (DaemonSet)
+
+- Deploy across a cluster as a privileged DaemonSet:
+
+```bash
+kubectl create ns edge-security
+kubectl apply -f edge/deploy/k8s-daemonset.yaml -n edge-security
+```
+
+Notes:
+- Uses hostNetwork and privileged container to allow XDP attach.
+- Mounts /var/lib/idps on host for blocklist snapshot persistence.
+
 ## Architecture Overview
 
 The system separates the fast path (kernel enforcement and packet capture) from user‑space detection and policy. High‑confidence detections update a TTL blocklist stored in the kernel’s eBPF maps for O(1) drop decisions.
@@ -132,7 +171,11 @@ edge/
     ├── edge-agent.service       # Systemd unit (memlock, restart)
     ├── edge-agent.env           # Linux env defaults
     ├── install_rpi.sh           # Raspberry Pi install (generic XDP + live capture)
-    └── edge-agent-rpi.env       # Pi env defaults (live:eth0)
+    ├── edge-agent-rpi.env       # Pi env defaults (live:eth0)
+    ├── package_node.sh          # Build portable tarball with agent + XDP + installer
+    └── k8s-daemonset.yaml       # Kubernetes DaemonSet manifest (privileged, hostNetwork)
+edge/agent/
+├── Dockerfile                   # Container build for edge-agent + XDP object
 documentation/
 ├── current-architecture.md      # Brief architecture notes
 ├── next-steps.md                # Planned work items
@@ -213,3 +256,14 @@ documentation/
 - End‑to‑end:
   - Start the agent, run `pipeline_harness.py` to drive predictions and verify `/stats` and snapshot persistence.
 
+## Attack Replication (Lab Only)
+- HOIC‑style HTTP flood:
+  - `python3 edge/tools/attacks/attack_runner.py --mode hoic --host <agent-ip> --port 8080 --threads 100 --duration 60`
+- UDP flood:
+  - `python3 edge/tools/attacks/attack_runner.py --mode udp --host <agent-ip> --port 53 --threads 200 --duration 60`
+- Slowloris (Metasploit):
+  - `msfconsole -q -x "use auxiliary/dos/http/slowloris; set RHOST <agent-ip>; set RPORT 8080; run -j"`
+- SYN flood (hping3):
+  - `sudo hping3 -S -p 8080 -c 1000 <agent-ip>`
+
+Always run in a closed lab or virtual network you control.
