@@ -6,6 +6,11 @@
 #include <linux/if_vlan.h>
 #include <bpf/bpf_endian.h>
 
+struct vlan_hdr_local {
+    __be16 h_vlan_TCI;
+    __be16 h_vlan_encapsulated_proto;
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 1048576);
@@ -62,7 +67,7 @@ int xdp_blocklist_prog(struct xdp_md *ctx) {
     __u16 h_proto = eth->h_proto;
     void *pos = (void *)(eth + 1);
     if (h_proto == bpf_htons(ETH_P_8021Q) || h_proto == bpf_htons(ETH_P_8021AD)) {
-        struct vlan_hdr *vh = pos;
+        struct vlan_hdr_local *vh = pos;
         if ((void *)(vh + 1) > data_end) {
             inc_counter(1);
             return XDP_PASS;
